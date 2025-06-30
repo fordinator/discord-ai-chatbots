@@ -1,0 +1,155 @@
+body {
+    font-family: monospace;
+    background-color: #1a1a1a;
+    color: #f0f0f0;
+    margin: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+}
+
+#app-container {
+    width: 90%;
+    max-width: 800px;
+    border: 1px solid #444;
+    background-color: #2a2a2a;
+    box-shadow: 0 0 20px rgba(0,0,0,0.5);
+    padding: 20px;
+}
+
+h1, h3 {
+    text-align: center;
+    color: #00ff7f;
+    border-bottom: 1px solid #00ff7f;
+    padding-bottom: 10px;
+}
+
+#status-display {
+    padding: 10px;
+    margin-bottom: 15px;
+    border: 1px solid #444;
+    background-color: #1e1e1e;
+}
+.status-bar {
+    display: flex;
+    justify-content: space-around;
+    font-weight: bold;
+    color: #00ff7f;
+    margin-bottom: 10px;
+}
+.stat-block-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 5px 15px;
+    font-size: 0.9em;
+    padding-top: 10px;
+    border-top: 1px solid #333;
+}
+.combat-stats { color: #87ceeb; }
+
+
+#game-window {
+    height: 60vh;
+    border: 1px solid #444;
+    margin-bottom: 15px;
+    display: flex;
+    flex-direction: column;
+}
+
+#story-log {
+    flex-grow: 1;
+    overflow-y: auto;
+    padding: 10px;
+    background-color: #1e1e1e;
+}
+
+.log-entry {
+    margin-bottom: 10px;
+    white-space: pre-wrap;
+    line-height: 1.4;
+}
+.log-entry.user { color: #87ceeb; }
+.log-entry.system { color: #f0e68c; font-style: italic; }
+.log-entry.dm-stream { color: #f5f5f5; }
+.log-entry.error { color: #ff6347; font-weight: bold; }
+.log-entry.roll-summary {
+    background-color: #252535;
+    border-left: 4px solid #00ff7f;
+    padding: 10px;
+    margin: 15px 0;
+}
+
+#action-buttons {
+    padding: 10px;
+    border-top: 1px solid #444;
+    background-color: #252525;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.input-area {
+    padding: 10px;
+    border: 1px solid #444;
+    margin-top: 10px;
+}
+
+#action-form {
+    display: flex;
+    width: 100%;
+    align-items: center;
+}
+#input-prompt {
+    margin-right: 10px;
+    font-style: italic;
+    color: #f0e68c;
+}
+
+input[type="text"], input[type="number"] {
+    flex-grow: 1;
+    background-color: #333;
+    border: 1px solid #555;
+    color: #f0f0f0;
+    padding: 8px;
+    font-family: monospace;
+}
+
+button {
+    background-color: #00ff7f;
+    color: #1a1a1a;
+    border: none;
+    padding: 8px 15px;
+    cursor: pointer;
+    font-weight: bold;
+    font-family: monospace;
+    flex-shrink: 0;
+}
+button:disabled {
+    background-color: #555;
+    color: #888;
+    cursor: not-allowed;
+}
+button.secondary { background-color: #4f8f7f; color: #e0e0e0;}
+
+#character-creation .stat-grid {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 10px;
+    margin-bottom: 15px;
+}
+#consent-area { margin: 15px 0; }
+
+.blinking-cursor {
+    animation: blink 1s step-end infinite;
+    background-color: #f0f0f0;
+    display: inline-block;
+    width: 10px;
+    height: 1em;
+    margin-left: 2px;
+    vertical-align: text-bottom;
+}
+@keyframes blink {
+    from, to { background-color: transparent; }
+    50% { background-color: #f0f0f0; }
+}
