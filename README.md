@@ -6,3 +6,10 @@ With inspiration from [this](https://github.com/vndee/local-talking-llm) and [th
 Mostly here to protect me as the Original Creator.
 
 And all the AI models I've known over the years...
+
+## CONTACT ME:
+
+- john@starlightcomputers.com
+- https://vexation.me
+- https://discord.gg/gAugxKBHQY
+- https://www.patreon.com/c/vexation1977
