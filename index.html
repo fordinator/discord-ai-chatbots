@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLMcord Adventure</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head><body>
+    <div id="app-container">
+        <h1>Text-Based Adventure</h1>
+
+        <div id="status-display">
+            </div>
+        
+        <div id="game-window">
+            <div id="story-log"></div>
+            <div id="action-buttons"></div>
+        </div>
+        
+        <div id="character-creation" class="input-area">
+            <h3>Create Your Character</h3>
+            <p>Assign your stats (from -8 to 8). A balanced character is recommended.</p>
+            <form id="char-creator-form">
+                <div class="stat-grid">
+                    <label for="str">STR:</label><input type="number" id="str" value="1" min="-8" max="8">
+                    <label for="dex">DEX:</label><input type="number" id="dex" value="1" min="-8" max="8">
+                    <label for="con">CON:</label><input type="number" id="con" value="1" min="-8" max="8">
+                    <label for="int">INT:</label><input type="number" id="int" value="1" min="-8" max="8">
+                    <label for="wis">WIS:</label><input type="number" id="wis" value="1" min="-8" max="8">
+                    <label for="cha">CHA:</label><input type="number" id="cha" value="1" min="-8" max="8">
+                </div>
+                <div id="consent-area">
+                    <input type="checkbox" id="consent-checkbox">
+                    <label for="consent-checkbox">I agree that my inputs will be sent to an AI service to generate the story.</label>
+                </div>
+                <button type="submit" id="start-game-btn" disabled>Begin Adventure</button>
+            </form>
+        </div>
+
+        <div id="game-input-area" class="input-area" style="display: none;">
+            <form id="action-form">
+                <span id="input-prompt">What do you do?</span>
+                <input type="text" id="action-input" autocomplete="off" required>
+                <button type="submit">Send</button>
+            </form>
+        </div>
+    </div>
+    <script src="/static/script.js"></script>
+</body>
+</html>

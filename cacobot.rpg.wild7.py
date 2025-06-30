@@ -22,8 +22,8 @@ import io
 import random
 
 # chess and urllib.parse are not used in the provided RPG logic, but kept for completeness
-# import chess
-# import urllib.parse
+import chess
+import urllib.parse
 
 logging.basicConfig(
     level=logging.INFO,
@@ -80,33 +80,18 @@ discord_bot = commands.Bot(intents=intents, activity=activity, command_prefix=No
 rpg_sessions: dict[int, 'RPGSession'] = {}
 httpx_client = httpx.AsyncClient()
 
-def is_authorized():
+def is_in_allowed_channel():
     async def predicate(interaction: discord.Interaction) -> bool:
-        permissions = config.get("permissions", {})
-        allowed_user_ids = permissions.get("users", {}).get("allowed_ids", [])
-        allowed_channel_ids = permissions.get("channels", {}).get("allowed_ids", [])
-
-        # If no specific permissions are set in the config, allow the command.
-        if not allowed_user_ids and not allowed_channel_ids:
+        allowed_channel_ids = config.get("permissions", {}).get("channels", {}).get("allowed_ids", {})
+        if not allowed_channel_ids:
             return True
-
-        # Check if the user is on the allowed list, which grants access anywhere.
-        if interaction.user.id in allowed_user_ids:
-            return True
-
-        # If not an allowed user, check for allowed channels (only applies in servers).
-        if interaction.guild is not None and interaction.channel_id in allowed_channel_ids:
-            return True
-        
-        # If none of the conditions are met, the check fails.
-        return False
-
+        return interaction.channel_id in allowed_channel_ids
     return app_commands.check(predicate)
 
 @discord_bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.CheckFailure):
-        await interaction.response.send_message("⚠️ You do not have permission to use this command.", ephemeral=True)
+        await interaction.response.send_message("⚠️ You can only use this command in the designated channel.", ephemeral=True)
     else:
         logging.error(f"An unhandled error occurred: {error}")
         if interaction.response.is_done():
@@ -199,8 +184,7 @@ class RPGActionView(ui.View):
         button_label = action_buttons[action_index].label if 0 <= action_index < len(action_buttons) else ""
         
         self.session.story.append({"role": "user", "content": f"I will {button_label}"})
-        outcome_prompt = f"As the Dungeon Master, describe this outcome in a narrative and engaging way. No significant events take place, the result succeeds but is only descriptive. No significant change occurs in the plot. **Your response must NOT offer the player a list of choices or suggested actions.** Conclude your narrative with only the open-ended question, 'What do you do now?'"
-
+        outcome_prompt = f"The player chose the stock action: '{button_label}'\nAs the Dungeon Master, describe this outcome in a narrative and engaging way. No significant events take place, the result succeeds but is only descriptive. No significant change occurs in the plot, nor does the player really advance or impede any of their goals. Do not mention dice, stats, or numbers. Conclude by asking the player what they do next."
         provider, model = curr_model.split("/", 1)
         openai_client = AsyncOpenAI(base_url=config["providers"][provider]["base_url"], api_key=config["providers"][provider].get("api_key", "sk-no-key-required"))
 
@@ -312,12 +296,8 @@ class CustomizeStatView(discord.ui.View):
     async def flip_button_callback(self, interaction: discord.Interaction):
         index_to_flip = int(interaction.data['custom_id'].split('_')[1])
         self.dice[index_to_flip] *= -1
-        new_total = sum(self.dice)
         self._update_dice_buttons()
-        await interaction.response.edit_message(
-            content=f"Customizing **{self.stat_name} = {new_total:+}**. Click buttons to flip signs.", 
-            view=self
-        )
+        await interaction.response.edit_message(view=self)
 
     async def finish_button_callback(self, interaction: discord.Interaction):
         if sum(1 for d in self.dice if d > 0) == 2 and sum(1 for d in self.dice if d < 0) == 2:
@@ -368,12 +348,8 @@ class StatGenerationView(discord.ui.View):
                 self.current_stat_index += 1
                 await self.show_next_stat(inner_interaction)
             async def customize_callback(inner_interaction: discord.Interaction):
-                initial_total = sum(initial_signed_dice)
                 customize_view = CustomizeStatView(self.original_interaction, stat_name, initial_signed_dice, self)
-                await inner_interaction.response.edit_message(
-                    content=f"Customizing **{stat_name} = {initial_total:+}**. Click buttons to flip signs.", 
-                    view=customize_view
-                )
+                await inner_interaction.response.edit_message(content=f"Customizing **{stat_name}**. Click buttons to flip signs.", view=customize_view)
 
             keep_button = discord.ui.Button(label="Keep", style=discord.ButtonStyle.success)
             keep_button.callback = keep_callback
@@ -420,29 +396,8 @@ class StatGenerationView(discord.ui.View):
     async def on_timeout(self):
         await self.original_interaction.edit_original_response(content="❌ Character roll timed out.", view=None)
 
-async def _start_rpg_session(interaction: discord.Interaction, stats: Dict[str, int]):
-    """
-    Finalizes character stats, creates the RPG session, and prompts the user for a description.
-    """
-    user = interaction.user
-    session = RPGSession(user_id=user.id, user_mention=user.mention, stats=stats, story=[
-        {"role": "system", "content": "You are a Dungeon Master for a one-shot RPG adventure."},
-        {"role": "system", "content": f"The player's character stats are: { ' | '.join(f'{s}: {v:+}' for s, v in stats.items()) }"}
-    ])
-    rpg_sessions[interaction.channel_id] = session
-    session.state = RPGState.AWAITING_DESCRIPTION
-    
-    # Use followup.send for interactions that have been deferred or already responded to.
-    send_method = interaction.followup.send if interaction.response.is_done() else interaction.channel.send
-
-    prompt_message = (f"**Your character is ready, {user.mention}!**\n\n"
-                    "Before we begin, would you like to provide a brief description of your character? "
-                    "This could be their name, appearance, or a bit of their backstory.\n\n"
-                    "**Please reply to this message with your description.** (Or reply with `skip` if you'd rather not.)")
-    await send_method(prompt_message)
-    
 @rpg_group.command(name="rollchar", description="Create a character with randomly generated stats.")
-@is_authorized()
+@is_in_allowed_channel()
 async def rpg_rollchar(interaction: discord.Interaction):
     if interaction.channel_id in rpg_sessions:
         await interaction.response.send_message("⚠️ An RPG session is already active in this channel.", ephemeral=True)
@@ -453,227 +408,100 @@ async def rpg_rollchar(interaction: discord.Interaction):
     await view.wait()
 
     if view.final_stats:
-        # --- MODIFICATION ---
-        # The original interaction was ephemeral, so we need a real message to start the session.
-        # We can send a simple confirmation to the original ephemeral response.
-        await interaction.followup.send("Character roll complete. The adventure begins in the channel!", ephemeral=True)
-        # Now, call the new helper to post the public message and start the session.
-        await _start_rpg_session(interaction, view.final_stats)
-        # --- END OF MODIFICATION ---
-        
-@rpg_group.command(name="createchar", description="Create a character by assigning your own stats.")
-@is_authorized()
-async def rpg_createchar(
-    interaction: discord.Interaction,
-    strength: app_commands.Range[int, -8, 8],
-    dexterity: app_commands.Range[int, -8, 8],
-    constitution: app_commands.Range[int, -8, 8],
-    intelligence: app_commands.Range[int, -8, 8],
-    wisdom: app_commands.Range[int, -8, 8],
-    charisma: app_commands.Range[int, -8, 8],
-):
-    """Allows a user to create a character by specifying their six stat values."""
-    if interaction.channel_id in rpg_sessions:
-        await interaction.response.send_message("⚠️ An RPG session is already active in this channel.", ephemeral=True)
+        stats, user = view.final_stats, interaction.user
+        session = RPGSession(user_id=user.id, user_mention=user.mention, stats=stats, story=[
+            {"role": "system", "content": "You are a Dungeon Master for a one-shot RPG adventure."},
+            {"role": "system", "content": f"The player's character stats are: { ' | '.join(f'{s}: {v:+}' for s, v in stats.items()) }"}
+        ])
+        rpg_sessions[interaction.channel_id] = session
+        session.state = RPGState.AWAITING_DESCRIPTION
+        prompt_message = (f"**Your character is ready, {user.mention}!**\n\n"
+                        "Before we begin, would you like to provide a brief description of your character? "
+                        "This could be their name, appearance, or a bit of their backstory.\n\n"
+                        "**Please reply to this message with your description.** (Or reply with `skip` if you'd rather not.)")
+        await interaction.channel.send(prompt_message)
+
+@rpg_group.command(name="roll", description="Roll the dice to perform an action.")
+@is_in_allowed_channel()
+async def rpg_roll(interaction: discord.Interaction):
+    session = rpg_sessions.get(interaction.channel_id)
+    if not session:
+        await interaction.response.send_message("⚠️ There is no active RPG session in this channel.", ephemeral=True)
         return
-
+    if interaction.user.id != session.user_id:
+        await interaction.response.send_message("⚠️ It's not your turn to roll.", ephemeral=True)
+        return
+    if session.state != RPGState.AWAITING_ROLL:
+        await interaction.response.send_message("⚠️ There is no action pending a roll.", ephemeral=True)
+        return
     await interaction.response.defer()
-
-    stats = {
-        "STR": strength, "DEX": dexterity, "CON": constitution,
-        "INT": intelligence, "WIS": wisdom, "CHA": charisma
-    }
-
-    stats_display = "\n".join(f"**{stat}**: {val:+}" for stat, val in stats.items())
-    message_content = (
-        f"You have assigned the following stats for your character, {interaction.user.mention}:\n{stats_display}\n\n"
-        "Would you like to keep this character and begin the adventure?"
-    )
-
-    class ConfirmCharacterView(discord.ui.View):
-        def __init__(self):
-            super().__init__(timeout=300)
-            self.confirmed = False
-
-        @discord.ui.button(label="Keep Character", style=discord.ButtonStyle.success)
-        async def keep(self, button_interaction: discord.Interaction, button: discord.ui.Button):
-            if button_interaction.user.id != interaction.user.id:
-                await button_interaction.response.send_message("⚠️ This is not your character to confirm.", ephemeral=True)
-                return
-
-            self.confirmed = True
-            for item in self.children:
-                item.disabled = True
-            await button_interaction.response.edit_message(
-                content=f"**Stats Confirmed** for {interaction.user.mention}!\n{stats_display}",
-                view=self
-            )
-            self.stop()
-
-        @discord.ui.button(label="Discard", style=discord.ButtonStyle.danger)
-        async def discard(self, button_interaction: discord.Interaction, button: discord.ui.Button):
-            if button_interaction.user.id != interaction.user.id:
-                await button_interaction.response.send_message("⚠️ This is not your character to discard.", ephemeral=True)
-                return
-            
-            for item in self.children:
-                item.disabled = True
-            await button_interaction.response.edit_message(content="Character discarded.", view=self)
-            self.stop()
-
-    view = ConfirmCharacterView()
-    await interaction.followup.send(message_content, view=view)
-    await view.wait()
-
-    if view.confirmed:
-        await _start_rpg_session(interaction, stats)
-
-class RollDiceView(discord.ui.View):
-    def __init__(self, session: RPGSession):
-        super().__init__(timeout=180)  # Set a timeout for the view
-        self.session = session
-        self.message: Optional[discord.Message] = None
-
-        self.roll_button = discord.ui.Button(
-            label=f"Roll for {session.pending_stat_for_action} vs DV {session.pending_dv}",
-            style=discord.ButtonStyle.primary,
-            custom_id="rpg_roll_dice"
-        )
-        self.roll_button.callback = self.roll_button_callback
-        self.add_item(self.roll_button)
-
-    async def roll_button_callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.session.user_id:
-            await interaction.response.send_message("⚠️ It's not your turn to roll.", ephemeral=True)
-            return
-        
-        self.roll_button.disabled = True
-        await interaction.response.edit_message(view=self)
-
-        dice_rolls = await _roll_dice(8)
-        if not dice_rolls or len(dice_rolls) < 8:
-            await interaction.followup.send("❌ Error rolling dice. Please try again.", ephemeral=True)
-            return
-        
-        pos, neg = sum(dice_rolls[:4]), sum(dice_rolls[4:])
-        stat_bonus = self.session.stats[self.session.pending_stat_for_action]
-        final_result = (pos - neg) + stat_bonus
-        dv, cv = self.session.pending_dv, self.session.pending_cv
-        margin = final_result - dv
-        
-        outcomes = {7: "Amazing success", 5: "Great success", 3: "OK success", 1: "Slight success", 
-                    -1: "Slight failure", -3: "Kinda bad failure", -5: "Bad failure", -999: "Terrible failure"}
-        outcome_desc = next(v for k, v in sorted(outcomes.items(), reverse=True) if margin >= k)
-
-        roll_summary = (f"**Action:** *{self.session.pending_action_text}*\n"
-                        f"**Check:** {self.session.pending_stat_for_action} `({stat_bonus:+})` vs **DV** `{dv}` (CV: {cv:+})\n"
-                        f"**Roll:** `[{pos} - {neg}] + {stat_bonus} =` **{final_result}** | **Margin:** {margin:+} | **Outcome:** {outcome_desc}")
-
-        provider, model = curr_model.split("/", 1)
-        client = AsyncOpenAI(base_url=config["providers"][provider]["base_url"], api_key=config["providers"][provider].get("api_key", "sk-no-key-required"))
-        self.session.story.append({"role": "user", "content": self.session.pending_action_text})
-
-        # --- START OF DEATH CHECK MODIFICATION ---
-
-        if outcome_desc == "Terrible failure":
-            death_check_prompt = (
-                f"The player attempted to '{self.session.pending_action_text}' and the result was a 'Terrible failure' ({roll_summary}). "
-                "In the context of the story and this specific failure, does this event directly result in the character's death? "
-                "The death should be a plausible and immediate consequence of the failed action. "
-                "Respond with a single word: YES or NO."
-            )
-            plot_context = [{"role": "system", "content": f"SECRET DM PLOT OUTLINE: {json.dumps(self.session.plot_outline)}"} if self.session.plot_outline else {"role": "system", "content": "No plot outline provided."}]
-            death_payload = plot_context + self.session.story + [{"role": "system", "content": death_check_prompt}]
-            
-            response = await client.chat.completions.create(model=model, messages=death_payload, stream=False, temperature=0)
-            death_result = response.choices[0].message.content.strip().upper()
-
-            if "YES" in death_result:
-                await interaction.message.edit(content=f"**FATAL FAILURE**\n{roll_summary}", view=None)
-                
-                reason_for_death = (
-                    f"The character has died. The final action was attempting to '{self.session.pending_action_text}', "
-                    f"which resulted in a terrible, fatal failure ({outcome_desc})."
-                )
-                await _conclude_rpg_session(interaction.channel, self.session, reason_for_death)
-                return # Stop processing, the session is over.
-
-        # --- END OF DEATH CHECK MODIFICATION ---
-
-        outcome_prompt = (
-            "This was a pivotal moment. The action CANNOT be repeated. The outcome is now a permanent part of the story. "
-            f"The player tried to: '{self.session.pending_action_text}'. "
-            f"The definitive result of this irreversible action was: '{outcome_desc}'. "
-            "Narrate the CONSEQUENCES of this result. Do not describe the attempt; describe what HAPPENS NOW. "
-            "Crucially, the situation has fundamentally changed. The previous challenge is now resolved (either passed or failed, creating a new problem). "
-            "**Your response must NOT offer the player a list of choices or suggested actions.** You must conclude your narrative with only the open-ended question, 'What do you do now?'"
-        )
-        
-        plot_context = []
-        if self.session.plot_outline:
-            plot_context.append({"role": "system", "content": f"SECRET DM PLOT OUTLINE: {json.dumps(self.session.plot_outline)}"})
-
-        llm_payload = plot_context + self.session.story + [{"role": "system", "content": outcome_prompt}]
-        
-        narration_starter_msg = await interaction.channel.send(content="*Dice hit the table...*")
-        
-        await narrate_rpg_turn(interaction.channel, self.session, llm_payload, client, narration_starter_msg, roll_details_text=roll_summary)
-        
-        await interaction.message.edit(content=f"Roll processed for action: *{self.session.pending_action_text}*", view=None)
-
-
-    async def on_timeout(self):
-        self.roll_button.disabled = True
-        await self.message.edit(content="Roll timed out.", view=self)
-
-
-async def _conclude_rpg_session(channel: discord.TextChannel, session: RPGSession, conclusion_reason: str):
-    """
-    Handles the logic for concluding an RPG session, narrating the end, and cleaning up.
-    """
-    await channel.send(f"**The adventure concludes...**")
+    dice_rolls = await _roll_dice(8)
+    if not dice_rolls or len(dice_rolls) < 8:
+        await interaction.followup.send("❌ Error rolling dice. Please try again.", ephemeral=True)
+        return
     
-    conclusion_prompt = (
-        f"The adventure is now over. {conclusion_reason}. "
-        "Based on the story so far, provide a concluding narrative, wrapping up the adventure with a brief but satisfying end. "
-        "Describe the final state of the world and the legacy (or lack thereof) of the character's actions."
-    )
+    pos, neg = sum(dice_rolls[:4]), sum(dice_rolls[4:])
+    stat_bonus = session.stats[session.pending_stat_for_action]
+    final_result = (pos - neg) + stat_bonus
+    dv, cv = session.pending_dv, session.pending_cv
+    margin = final_result - dv
+    
+    outcomes = {7: "Amazing success", 5: "Great success", 3: "OK success", 1: "Near success", 
+                -1: "Near failure", -3: "Kinda bad failure", -5: "Bad failure", -999: "Terrible failure"}
+    outcome_desc = next(v for k, v in sorted(outcomes.items(), reverse=True) if margin >= k)
 
+    summary_msg = await interaction.followup.send(content="*Dice hit the table...*", wait=True)
+    # Updated code for the rpg_roll function
+
+    roll_summary = (f"**Action:** *{session.pending_action_text}*\n"
+                    f"**Check:** {session.pending_stat_for_action} `({stat_bonus:+})` vs **DV** `{dv}` (CV: {cv:+})\n"
+                     f"**Roll:** `[{pos} - {neg}] + {stat_bonus} =` **{final_result}** | **Margin:** {margin:+} | **Outcome:** {outcome_desc}")
+
+    outcome_prompt = (f"The player attempted: '{session.pending_action_text}'. This required a {session.pending_stat_for_action} check. "
+                      f"The result was: '{outcome_desc}'. As the DM, describe this outcome narratively. Do not mention dice, stats, or numbers. "
+                      f"Conclude by asking what they do next.")
+    
     provider, model = curr_model.split("/", 1)
     client = AsyncOpenAI(base_url=config["providers"][provider]["base_url"], api_key=config["providers"][provider].get("api_key", "sk-no-key-required"))
-    
+    session.story.append({"role": "user", "content": session.pending_action_text})
+
+    # ADDED: Include plot outline in payload
     plot_context = []
     if session.plot_outline:
         plot_context.append({"role": "system", "content": f"SECRET DM PLOT OUTLINE: {json.dumps(session.plot_outline)}"})
 
-    llm_payload = plot_context + session.story + [{"role": "system", "content": conclusion_prompt}]
+    llm_payload = plot_context + session.story + [{"role": "system", "content": outcome_prompt}]
     
-    # Use the last message in the channel as the reply target to avoid errors
-    reply_target = channel.last_message or await channel.send("...")
+    await narrate_rpg_turn(interaction.channel, session, llm_payload, client, summary_msg, roll_details_text=roll_summary)
+    await summary_msg.edit(content=f"Roll processed for action: *{session.pending_action_text}*")
 
-    try:
-        await stream_llm_response(channel, reply_target, llm_payload, client)
-    except Exception as e:
-        logging.error(f"Error during RPG conclusion: {e}")
-        await channel.send(f"❌ An error occurred during the final narration: {e}")
-    finally:
-        if channel.id in rpg_sessions:
-            del rpg_sessions[channel.id]
-            
-            
 @rpg_group.command(name="conclude", description="Ends the current RPG session.")
-@is_authorized()
+@is_in_allowed_channel()
 async def rpg_conclude(interaction: discord.Interaction):
     session = rpg_sessions.get(interaction.channel_id)
     if not session or interaction.user.id != session.user_id:
         await interaction.response.send_message("⚠️ No active session for you to conclude here.", ephemeral=True)
         return
+    await interaction.response.defer()
+    conclusion_prompt = "The player has ended the session. Based on the story, provide a concluding narrative, wrapping up the current scene with a brief but satisfying end."
+    provider, model = curr_model.split("/", 1)
+    client = AsyncOpenAI(base_url=config["providers"][provider]["base_url"], api_key=config["providers"][provider].get("api_key", "sk-no-key-required"))
     
-    # Acknowledge the command immediately
-    await interaction.response.send_message("✅ Manually concluding the RPG session.", ephemeral=True)
-    
-    reason = "The player has chosen to end the session."
-    await _conclude_rpg_session(interaction.channel, session, reason)
+    # ADDED: Include plot outline in payload
+    plot_context = []
+    if session.plot_outline:
+        plot_context.append({"role": "system", "content": f"SECRET DM PLOT OUTLINE: {json.dumps(session.plot_outline)}"})
+
+    llm_payload = plot_context + session.story + [{"role": "system", "content": conclusion_prompt}]
+    reply_target = await interaction.channel.send("Concluding the adventure...")
+    try:
+        await stream_llm_response(interaction.channel, reply_target, llm_payload, client)
+    except Exception as e:
+        logging.error(f"Error during RPG conclusion: {e}")
+    finally:
+        if interaction.channel_id in rpg_sessions:
+            del rpg_sessions[interaction.channel_id]
+        await interaction.followup.send("✅ **The RPG session has now concluded.**", ephemeral=True)
         
 discord_bot.tree.add_command(rpg_group)
 
@@ -734,7 +562,8 @@ async def on_message(new_msg: discord.Message):
                 ack_msg = "Your character description has been recorded and your destiny set." if description_provided else "No description provided. A mysterious destiny has been set."
                 initial_story_message = await new_msg.channel.send(f"{ack_msg}\nThe adventure is about to begin...")
                 
-                dungeon_master_prompt = "You are the Dungeon Master. Describe an immersive opening scene for the player. Introduce the environment and any NPCs. **Your response must NOT offer the player a list of choices or suggested actions.** You must conclude your narrative with only the open-ended question, 'What do you do now?'"
+                dungeon_master_prompt = "You are a Dungeon Master. Describe an immersive opening scene for the player. Introduce the environment and any NPCs. Conclude by asking the player what they would like to do. Do not ask for a roll or determine any outcomes yet."
+                
                 plot_context = []
                 if session.plot_outline:
                     plot_context.append({"role": "system", "content": f"SECRET DM PLOT OUTLINE: {json.dumps(session.plot_outline)}"})
@@ -768,7 +597,7 @@ async def on_message(new_msg: discord.Message):
                         plot_context.append({"role": "system", "content": f"SECRET DM PLOT OUTLINE: {json.dumps(session.plot_outline)}"})
                     
                     erratic_event_prompt = (
-                        f"An 'ERRATIC EVENT' has been triggered (EV: {ev})! The player just tried to: '{action_text}'. You MUST now narrate a COMPLETELY UNEXPECTED and wild turn of events. This event should be related to the player's action and the overall story, but it must throw the narrative off balance. It can be good, bad, or bizarre, but it must be a major narrative twist. Describe this shocking development. **Your response must NOT offer the player a list of choices or suggested actions.** You must conclude your narrative with only the open-ended question, 'What do you do now?'"
+                        f"An 'ERRATIC EVENT' has been triggered (EV: {ev})! The player just tried to: '{action_text}'. You MUST now narrate a COMPLETELY UNEXPECTED and wild turn of events. This event should be related to the player's action and the overall story, but it must throw the narrative off balance. It can be good, bad, or bizarre, but it must be a major narrative twist. Describe this shocking development, and then ask the player what they do in response to this chaos.\n"
                     )
                     payload = plot_context + session.story + [{"role": "system", "content": erratic_event_prompt}]
                     # Call narrate_rpg_turn with the new event notification
@@ -782,60 +611,22 @@ async def on_message(new_msg: discord.Message):
                 if session.plot_outline:
                     plot_context.append({"role": "system", "content": f"SECRET DM PLOT OUTLINE: {json.dumps(session.plot_outline)}"})
 
-                # 1. DEFINE the prompt for getting the Criticality Value (CV) first.
-                cv_prompt = (
-                    f"A player wants to: '{action_text}'. Analyze this action's potential to fundamentally change the current situation or "
-                     "advance the narrative. Is this a minor, descriptive interaction, or a pivotal, plot-driving moment? "
-                     "A 'trivial' action (CV between -2 and 2) will be narrated as a simple success and will not change the core challenge. "
-                     "A 'critical' action (CV outside -2 and 2) represents an attempt to overcome a real obstacle and MUST change the state of the story. "
-                     "Based on this, respond with a JSON object with one key 'cv' and an integer from -7 (trivial) to +7 (story-altering). "
-                     "Example: {\"cv\": 5}"
-                )
-                
-                # 2. GET the CV value from the LLM.
-                cv_payload = plot_context + session.story + [{"role": "system", "content": cv_prompt}]
+                cv_prompt = f"Player action: '{action_text}'. How critical is this to the story? Respond with a JSON object with one key 'cv' and an integer from -7 (trivial) to +7 (story-altering). Example: {{\"cv\": 3}}"
+                cv_payload = plot_context + [{"role": "system", "content": cv_prompt}]
                 cv_json = await get_llm_json_response(client, cv_payload)
                 cv = cv_json.get("cv", 0) if cv_json else 0
                 session.pending_cv = cv
 
-                # 3. USE a single IF/ELSE block to handle the outcome.
                 if -2 <= cv <= 2:
-                    # This is a trivial action that auto-succeeds.
-                    success_prompt = (
-                        f"The player's action, '{action_text}', is a simple one that succeeds without needing a roll. "
-                        "Narrate this successful outcome. It should be a brief, descriptive event that does not significantly alter the plot. "
-                        "**Your response must NOT offer the player a list of choices or suggested actions.** "
-                        "Conclude your narrative with only the open-ended question, 'What do you do now?'"
-                    )
+                    success_prompt = f"The player's trivial action, '{action_text}', succeeds. Describe the simple, positive outcome. Ask what they do next."
                     payload = plot_context + session.story + [{"role": "system", "content": success_prompt}]
                     await narrate_rpg_turn(new_msg.channel, session, payload, client, new_msg.reference.resolved)
                 else:
-                    # This is a critical action that requires a roll.
-                    
-                    instruction_template = (
-                        "Evaluate the following player action: '{action_text}'.\n\n"
-                        "Your task is to determine the intrinsic difficulty of this action. "
-                        "You MUST IGNORE the player's character, their stats, their backstory, and all previous events. "
-                        "Your assessment must be based SOLELY on how difficult the action would be for a normal, average human with all stats at +0.\n\n"
-                        "First, determine the most relevant stat (STR, DEX, CON, INT, WIS, CHA) for this action. "
-                        "Second, determine a base Difficulty Value (DV) for that action on a scale from -7 (trivial for a normal person) to +7 (nearly impossible for a normal person).\n\n"
-                        "Respond ONLY with the STAT and DV, separated by a comma. Example: 'STR,5'"
-                    )
-                    
                     if session.state == RPGState.AWAITING_STAT_ACTION_INPUT:
-                        # Case where the player has already chosen the stat to use.
                         stat_to_use = session.pending_stat_for_action
-                        stat_prompt = (
-                            f"Evaluate the following player action: '{action_text}' (using the {stat_to_use} stat).\n\n"
-                            "Your task is to determine the intrinsic difficulty of this action. "
-                            "You MUST IGNORE the player's character, their stats, their backstory, and all previous events. "
-                            "Your assessment must be based SOLELY on how difficult the action would be for a normal, average human with all stats at +0.\n\n"
-                            f"The player is using {stat_to_use}. Determine a base Difficulty Value (DV) for this action on a scale from -7 (trivial for a normal person) to +7 (nearly impossible for a normal person).\n\n"
-                            f"Respond ONLY with '{stat_to_use}' and the DV, separated by a comma. Example: '{stat_to_use},3'"
-                        )
+                        stat_prompt = f"Player action: '{action_text}' using {stat_to_use}. Determine a base Difficulty (DV) from -7 to +7. Respond ONLY with '{stat_to_use},DV'. Example: '{stat_to_use},3'"
                     else:
-                        # Case where the LLM must determine the most relevant stat.
-                        stat_prompt = instruction_template.format(action_text=action_text)
+                        stat_prompt = f"Player action: '{action_text}'. Which stat is most relevant (STR, DEX, CON, INT, WIS, CHA)? Determine a base Difficulty (DV) from -7 to +7. Respond ONLY with 'STAT,DV'. Example: 'DEX,3'"
                     
                     stat_payload = plot_context + session.story + [{"role": "system", "content": stat_prompt}]
                     response = await client.chat.completions.create(model=model, messages=stat_payload)
@@ -847,11 +638,7 @@ async def on_message(new_msg: discord.Message):
                         final_dv = int(dv_str) + (cv // 2 if abs(cv) >= 5 else 0)
                         session.pending_stat_for_action, session.pending_dv, session.state = stat.upper(), final_dv, RPGState.AWAITING_ROLL
                         criticality_text = "**CRITICAL ACTION**" if abs(cv) >= 5 else "Action"
-                        
-                        view = RollDiceView(session)
-                        message_content = f"{session.user_mention}, {criticality_text} requires a roll.\n> *{action_text}*"
-                        sent_message = await new_msg.channel.send(message_content, view=view)
-                        view.message = sent_message # Store message reference for timeout editing
+                        await new_msg.channel.send(f"{session.user_mention}, {criticality_text} requires a **{stat.upper()}** check vs **DV {final_dv}** (CV: {cv:+}).\n> *{action_text}*\nUse `/rpg roll`.")
                     else:
                         await new_msg.channel.send(f"I couldn't determine the check for your action (got: `{raw_response}`). Please rephrase and reply to my last message.")
                         session.story.pop()
@@ -895,6 +682,42 @@ async def stream_llm_response(channel: discord.TextChannel, initial_message: dis
         await response_msg.edit(embed=embed)
     return full_response_content
     
+@discord_bot.tree.command(name="reset", description="Reset the system prompt")
+async def reset(interaction: discord.Interaction):
+    global system_prompt
+    system_prompt = config["system_prompt"]
+    await interaction.response.send_message("**System prompt reset.**", ephemeral=True)
+
+@discord_bot.tree.command(name="system", description="Change the system prompt")
+async def system(interaction: discord.Interaction, prompt: str):
+    global system_prompt
+    system_prompt = prompt
+    await interaction.response.send_message(f"**System prompt updated.**", ephemeral=True)
+
+@discord_bot.tree.command(name="model", description="View or switch the current model")
+async def model_command(interaction: discord.Interaction, model: Optional[str] = None):
+    global curr_model
+    if model is None:
+        await interaction.response.send_message(f"Current model is `{curr_model}`.", ephemeral=True)
+        return
+    user_is_admin = interaction.user.id in config.get("permissions", {}).get("users", {}).get("admin_ids", [])
+    if user_is_admin:
+        if model in config.get("models", {}):
+            curr_model = model
+            await interaction.response.send_message(f"Model switched to: `{model}`", ephemeral=True)
+        else:
+            await interaction.response.send_message("⚠️ That model is not available.", ephemeral=True)
+    else:
+        await interaction.response.send_message("🚫 You don't have permission to change the model.", ephemeral=True)
+
+@model_command.autocomplete("model")
+async def model_autocomplete(interaction: discord.Interaction, current: str) -> list[Choice[str]]:
+    all_models = config.get("models", {})
+    choices = [Choice(name=m, value=m) for m in all_models if current.lower() in m.lower()]
+    if curr_model not in [c.value for c in choices]:
+        choices.insert(0, Choice(name=f"◉ {curr_model} (current)", value=curr_model))
+    return choices[:25]
+
 @discord_bot.event
 async def on_ready():
     logging.info(f'Logged in as {discord_bot.user} (ID: {discord_bot.user.id})')
